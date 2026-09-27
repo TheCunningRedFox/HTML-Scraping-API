@@ -1,0 +1,126 @@
+services:
+  postgres:
+    image: postgres:18
+    container_name: postgres18
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+    networks:
+      - database
+
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    restart: unless-stopped
+
+    depends_on:
+      - postgres
+
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD}
+
+      # Не показывать страницу login
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+
+      # Не спрашивать Master Password
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+
+    volumes:
+      # Сохраняем настройки pgAdmin
+      - pgadmin_data:/var/lib/pgadmin
+
+      # Автоматическая конфигурация подключения
+      - ./servers.json:/pgadmin4/servers.json:ro
+      - ./pgpass:/pgpass-source:ro
+    ports:
+      - "8080:80"
+
+    networks:
+      - database
+
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        cp /pgpass-source /var/lib/pgadmin/pgpass
+        chmod 600 /var/lib/pgadmin/pgpass
+        exec /entrypoint.sh
+
+  app:
+    image: mcr.microsoft.com/dotnet/sdk:10.0
+    container_name: aspnet-app
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    working_dir: /src
+
+    volumes:
+      # Исходный код приложения
+      - ./src:/src
+
+      # Кэш NuGet
+      - nuget_cache:/root/.nuget/packages
+
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+
+      ConnectionStrings__DefaultConnection: >-
+        Host=postgres;
+        Port=5432;
+        Database=${POSTGRES_DB};
+        Username=${POSTGRES_USER};
+        Password=${POSTGRES_PASSWORD}
+
+    ports:
+      - "8090:8080"
+
+    networks:
+      - database
+
+    command:
+      - /bin/bash
+      - -c
+      - |
+        set -e
+
+        echo "=== Restore ==="
+        dotnet restore /src/HtmlScrapingApi.slnx
+
+        echo "=== Build ==="
+        dotnet build /src/HtmlScrapingApi.slnx --no-restore
+
+        echo "=== Start application ==="
+        dotnet run \
+          --project /src/HtmlScrapingApi/HtmlScrapingApi.csproj \
+          --no-build \
+          --urls http://0.0.0.0:8080
+
+networks:
+  database:
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  nuget_cache:
